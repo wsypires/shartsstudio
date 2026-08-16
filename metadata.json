@@ -1,0 +1,6 @@
+{
+  "name": "OpenCharts",
+  "description": "Open-source trading terminal with advanced charting, drawing tools, watchlist, DOM, indicator signal alerts with automated order execution, and built-in paper-trading engine.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
