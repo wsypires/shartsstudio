@@ -1,7 +1,10 @@
 import { useState, useEffect, useRef } from "react";
-import { TrendingUp, Clock, History, Globe, Newspaper, Bot, Zap } from "lucide-react";
+import { TrendingUp, Clock, History, Globe, Newspaper, Bot, Zap, Wallet, Radio } from "lucide-react";
 import { useAuthStore } from "../../services/store.tsx";
 import { useTradingStore } from "../../services/store.tsx";
+import { useBinanceStore } from "../../services/binance/useBinanceStore.ts";
+import { BinanceBalancesTab } from "../../components/binance/BinanceBalancesTab.tsx";
+import { BinanceOrdersTab } from "../../components/binance/BinanceOrdersTab.tsx";
 import {
   useCancelOrder,
   useClosePosition,
@@ -40,9 +43,9 @@ function getErrorMessage(error: unknown): string {
 }
 
 export interface BottomPanelProps {
-  tab: "positions" | "orders" | "history" | "journal" | "calendar" | "news" | "ai-trader" | "signals";
+  tab: "positions" | "orders" | "history" | "journal" | "calendar" | "news" | "ai-trader" | "signals" | "binance-balances" | "binance-orders";
   onTabChange: (
-    t: "positions" | "orders" | "history" | "journal" | "calendar" | "news" | "ai-trader" | "signals",
+    t: "positions" | "orders" | "history" | "journal" | "calendar" | "news" | "ai-trader" | "signals" | "binance-balances" | "binance-orders",
   ) => void;
   positions: Position[];
   orders: Order[];
@@ -187,17 +190,45 @@ export function BottomPanel({
   );
   const totalPnl = openPositions.reduce((sum, position) => sum + (position.unrealizedPnl || 0), 0);
 
+  const binanceMode = useBinanceStore((s) => s.mode);
+  const binanceBalances = useBinanceStore((s) => s.balances);
+  const binanceOpenOrders = useBinanceStore((s) => s.openOrders);
+
   const tabs: {
     key: typeof tab;
     label: string;
     icon: typeof Clock;
     count?: number;
   }[] = [
+    ...(binanceMode !== "demo"
+      ? [
+          {
+            key: "binance-orders" as const,
+            label: "Binance Orders",
+            icon: Radio,
+            count: binanceOpenOrders.length,
+          },
+          {
+            key: "binance-balances" as const,
+            label: "Binance Wallet",
+            icon: Wallet,
+            count: binanceBalances.length,
+          },
+        ]
+      : []),
     { key: "positions", label: "Positions", icon: TrendingUp, count: openPositions.length },
     { key: "orders", label: "Orders", icon: Clock, count: pendingOrders.length },
     { key: "signals", label: "Signals & Alerts", icon: Zap, count: activeSignalsCount },
     { key: "history", label: "Trade History", icon: History },
-    // { key: "journal", label: "Journal", icon: BookOpen }, // hidden pending QA (PS-285)
+    ...(binanceMode === "demo"
+      ? [
+          {
+            key: "binance-balances" as const,
+            label: "Binance Wallet",
+            icon: Wallet,
+          },
+        ]
+      : []),
     { key: "calendar", label: "Calendar", icon: Globe },
     { key: "news", label: "News", icon: Newspaper },
     ...(aiTraderEnabled ? [{ key: "ai-trader" as const, label: "AI Trader", icon: Bot }] : []),
@@ -260,6 +291,8 @@ export function BottomPanel({
 
       {/* Content */}
       <div className="flex-1 overflow-auto">
+        {tab === "binance-balances" && <BinanceBalancesTab />}
+        {tab === "binance-orders" && <BinanceOrdersTab />}
         {tab === "positions" && (
           <PositionsTable
             positions={openPositions}

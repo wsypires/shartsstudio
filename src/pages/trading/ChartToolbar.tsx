@@ -54,6 +54,7 @@ import { ChartTemplatesMenu } from "./ChartTemplatesMenu.tsx";
 import { ChartCleanerMenu } from "./ChartCleanerMenu.tsx";
 import { ReplayHUD } from "./ReplayHUD.tsx";
 import { getPipDigits } from "./utils.ts";
+import { BinanceModeSelector } from "../../components/binance/BinanceModeSelector.tsx";
 
 export interface ChartToolbarProps {
   selectedSymbol: string;
@@ -428,6 +429,11 @@ export function ChartToolbar({
       }
 
       <div className="flex-1 hidden md:block" />
+
+      {/* Binance Official Trading Selector */}
+      <div className="hidden sm:flex items-center mr-1">
+        <BinanceModeSelector />
+      </div>
 
       {/* Right Panel Toggles */}
       <div className="hidden md:flex items-center gap-0.5">

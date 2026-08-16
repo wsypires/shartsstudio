@@ -8,9 +8,12 @@ import {
   Zap,
   Volume2,
   VolumeX,
+  Radio,
+  Wallet,
 } from "lucide-react";
 import { useAuthStore } from "../../services/store.tsx";
 import { usePlaceOrder } from "../../services/queries.ts";
+import { useBinanceStore } from "../../services/binance/useBinanceStore.ts";
 import { readTraderPrefs } from "../../hooks/useTraderPreferences.ts";
 import { Button } from "../../components/ui/button.tsx";
 import { DisconnectedTradingBanner } from "../../components/ConnectionIndicator.tsx";
@@ -59,6 +62,9 @@ export function OrderPanel({
   onOrderSuccess,
 }: OrderPanelProps) {
   const isDemo = useAuthStore((s) => s.isDemo);
+  const { mode: binanceMode, isConfigured: binanceConfigured, balances, placeOrder: placeBinanceOrder } = useBinanceStore();
+  const [isSubmittingBinance, setIsSubmittingBinance] = useState(false);
+
   const [side, setSide] = useState<"BUY" | "SELL">("BUY");
   const [orderType, setOrderType] = useState<"MARKET" | "LIMIT" | "STOP">("MARKET");
   const [quantity, setQuantity] = useState(() => {
@@ -77,7 +83,77 @@ export function OrderPanel({
 
   const placeOrder = usePlaceOrder();
 
-  const handleSubmit = () => {
+  // Binance quote & base assets balance
+  const normSymbol = symbol.toUpperCase();
+  const baseAsset = normSymbol.replace(/USDT$|USD$/, "");
+  const quoteAsset = "USDT";
+  const usdtBalance = balances.find((b) => b.asset === quoteAsset);
+  const baseBalance = balances.find((b) => b.asset === baseAsset);
+  const availableUsdt = usdtBalance ? parseFloat(usdtBalance.free) : 0;
+  const availableBase = baseBalance ? parseFloat(baseBalance.free) : 0;
+
+  const handleSubmit = async () => {
+    if (binanceMode !== "demo") {
+      if (!binanceConfigured) {
+        toast.warning("Binance Setup Required", "Please configure your Binance API Key and Secret in the top bar.");
+        return;
+      }
+      const qty = parseFloat(quantity);
+      if (isNaN(qty) || qty <= 0) {
+        toast.warning("Invalid Quantity", "Quantity must be a positive number");
+        return;
+      }
+
+      setIsSubmittingBinance(true);
+      try {
+        let bOrderType: "MARKET" | "LIMIT" | "STOP_LOSS_LIMIT" = "MARKET";
+        let bPrice: number | undefined;
+        let bStopPrice: number | undefined;
+
+        if (orderType === "LIMIT") {
+          const p = parseFloat(price);
+          if (isNaN(p) || p <= 0) {
+            toast.warning("Missing Price", "Limit orders require a valid price");
+            setIsSubmittingBinance(false);
+            return;
+          }
+          bOrderType = "LIMIT";
+          bPrice = p;
+        } else if (orderType === "STOP") {
+          const sp = parseFloat(stopPrice);
+          if (isNaN(sp) || sp <= 0) {
+            toast.warning("Missing Stop Price", "Stop orders require a valid stop price");
+            setIsSubmittingBinance(false);
+            return;
+          }
+          bOrderType = "STOP_LOSS_LIMIT";
+          bStopPrice = sp;
+          bPrice = parseFloat(price) || sp;
+        }
+
+        const binancePair = normSymbol.endsWith("USD") && !normSymbol.endsWith("USDT")
+          ? `${normSymbol}T`
+          : normSymbol;
+
+        const res = await placeBinanceOrder({
+          symbol: binancePair,
+          side,
+          type: bOrderType,
+          quantity: qty,
+          price: bPrice,
+          stopPrice: bStopPrice,
+          timeInForce: bOrderType !== "MARKET" ? "GTC" : undefined,
+        });
+
+        if (res) {
+          onOrderSuccess?.();
+        }
+      } finally {
+        setIsSubmittingBinance(false);
+      }
+      return;
+    }
+
     if (!isFeedConnected) {
       toast.warning("No Data Feed", "Cannot place orders while disconnected from the data feed");
       return;
@@ -179,9 +255,18 @@ export function OrderPanel({
   return (
     <div className="flex flex-col h-full" data-testid="order-form">
       <div className="flex items-center justify-between px-3 py-2 border-b border-border bg-secondary">
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          New Order
-        </h3>
+        <div className="flex items-center gap-1.5">
+          {binanceMode !== "demo" && (
+            <span className="w-2 h-2 rounded-full bg-[#F3BA2F]" title="Binance Mode Active" />
+          )}
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            {binanceMode === "binance_testnet"
+              ? "Binance Testnet"
+              : binanceMode === "binance_live"
+              ? "Binance Live"
+              : "New Order"}
+          </h3>
+        </div>
         <div className="flex items-center gap-2">
           <button
             onClick={onToggleMute}
@@ -458,31 +543,55 @@ export function OrderPanel({
           </div>
         )}
 
-        {isDemo && (
-          <div className="bg-amber-500/10 border border-amber-500/30 rounded p-2 text-center">
-            <p className="text-amber-400 text-[10px] font-semibold uppercase tracking-wider">
-              Demo Mode
+        {/* Binance Available Balance Card */}
+        {binanceMode !== "demo" && (
+          <div className="bg-[#141820] border border-[#232936] rounded p-2 text-[10px] space-y-1">
+            <div className="flex items-center justify-between text-neutral-400">
+              <span className="flex items-center gap-1">
+                <Wallet className="w-3 h-3 text-[#F3BA2F]" />
+                Available {side === "BUY" ? "USDT" : baseAsset}:
+              </span>
+              <span className="font-mono text-white font-semibold">
+                {side === "BUY"
+                  ? `${availableUsdt.toLocaleString(undefined, { maximumFractionDigits: 2 })} USDT`
+                  : `${availableBase.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${baseAsset}`}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {binanceMode === "demo" && isDemo && (
+          <div className="bg-blue-500/10 border border-blue-500/30 rounded p-2 text-center">
+            <p className="text-blue-400 text-[10px] font-semibold uppercase tracking-wider">
+              Demo Paper Engine
             </p>
             <p className="text-muted-foreground text-[10px] mt-0.5">
-              Trading is disabled in demo mode
+              Simulated paper execution active. Switch to Binance in top header for real exchange orders.
             </p>
           </div>
         )}
-        {!isDemo && !isFeedConnected && <DisconnectedTradingBanner />}
+        {binanceMode === "demo" && !isDemo && !isFeedConnected && <DisconnectedTradingBanner />}
+
         <Button
           variant={side === "BUY" ? "buy" : "sell"}
           className="w-full"
           onClick={handleSubmit}
-          loading={placeOrder.isPending}
-          disabled={!accountId || placeOrder.isPending || isDemo || !isFeedConnected}
+          loading={binanceMode !== "demo" ? isSubmittingBinance : placeOrder.isPending}
+          disabled={
+            binanceMode !== "demo"
+              ? isSubmittingBinance || !binanceConfigured
+              : !accountId || placeOrder.isPending || !isFeedConnected
+          }
         >
-          {isDemo
-            ? "Demo — Trading Disabled"
-            : !isFeedConnected
-              ? "Disconnected — Trading Disabled"
-              : placeOrder.isPending
-                ? "Placing…"
-                : `${side === "BUY" ? "Buy" : "Sell"} ${quantity} ${symbol}`}
+          {binanceMode !== "demo"
+            ? !binanceConfigured
+              ? "Configure Binance Keys"
+              : isSubmittingBinance
+              ? "Sending to Binance…"
+              : `${side === "BUY" ? "Buy" : "Sell"} ${quantity} ${symbol} (${binanceMode === "binance_testnet" ? "Testnet" : "Spot"})`
+            : placeOrder.isPending
+            ? "Placing…"
+            : `${side === "BUY" ? "Buy" : "Sell"} ${quantity} ${symbol}`}
         </Button>
 
         {placeOrder.isError && (

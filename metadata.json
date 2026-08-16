@@ -1,6 +1,6 @@
 {
-  "name": "OpenCharts",
-  "description": "Open-source trading terminal with advanced charting, drawing tools, watchlist, DOM, indicator signal alerts with automated order execution, and built-in paper-trading engine.",
+  "name": "OpenCharts - Binance Multi-Product Trading Terminal",
+  "description": "Professional trading terminal with advanced charting, live Binance market feeds, official multi-product execution (Spot, USDS-M Futures, COIN-M Futures, Margin, Wallet balances, API diagnostics), indicators, and paper trading.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

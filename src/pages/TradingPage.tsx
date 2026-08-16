@@ -146,7 +146,16 @@ export function TradingPage() {
     updateChartPreferences({ activePlugins: ids });
   }, []);
   const [bottomTab, setBottomTab] = useState<
-    "positions" | "orders" | "history" | "journal" | "calendar" | "news" | "ai-trader" | "signals"
+    | "positions"
+    | "orders"
+    | "history"
+    | "journal"
+    | "calendar"
+    | "news"
+    | "ai-trader"
+    | "signals"
+    | "binance-balances"
+    | "binance-orders"
   >("positions");
   const { data: aiTraderEnabled } = useAiTraderEnabled();
   const [rightPanel, setRightPanel] = useState<
