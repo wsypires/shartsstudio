@@ -113,13 +113,47 @@ export function BinanceConnectionModal({
     setDiagnosticData(null);
   };
 
-  const runDiagnostics = async (key: string, sec: string, testnet: boolean) => {
+  const runDiagnostics = async (
+    key: string,
+    sec: string,
+    testnet: boolean,
+  ): Promise<{
+    ok: boolean;
+    message: string;
+    modules?: {
+      spot: { ok: boolean; error?: string };
+      restrictions?: { ok: boolean; data?: any };
+      wallet?: { ok: boolean };
+      futures: { ok: boolean; error?: string };
+      margin: { ok: boolean; error?: string };
+    };
+    resolvedMode: BinanceTradingMode;
+  }> => {
+    const requestedMode: BinanceTradingMode = testnet ? "binance_testnet" : "binance_live";
+    let resolvedMode: BinanceTradingMode = requestedMode;
+
     try {
-      const res = await binanceClient.testConnectionAll({
+      let res = await binanceClient.testConnectionAll({
         apiKey: key,
         apiSecret: sec,
         useTestnet: testnet,
       });
+
+      // Detect a mode mismatch: keys work on the other environment
+      if (res.hint === "testnet" && !testnet) resolvedMode = "binance_testnet";
+      if (res.hint === "live" && testnet) resolvedMode = "binance_live";
+
+      const modeChanged = resolvedMode !== requestedMode;
+      if (modeChanged) {
+        handleModeChange(resolvedMode);
+        // Re-run the diagnostic against the corrected environment so the
+        // result reflects the real status and credentials can be saved
+        res = await binanceClient.testConnectionAll({
+          apiKey: key,
+          apiSecret: sec,
+          useTestnet: resolvedMode === "binance_testnet",
+        });
+      }
 
       const spotOk = res.modules?.spot?.ok;
       const futuresOk = res.modules?.futures?.ok;
@@ -127,7 +161,7 @@ export function BinanceConnectionModal({
 
       let msg = "";
       if (spotOk) {
-        if (testnet) {
+        if (resolvedMode === "binance_testnet") {
           msg = "Conectado com sucesso ao Binance Spot Testnet! Pronto para enviar ordens simuladas e consultar saldos de teste.";
         } else {
           msg = `Conectado com sucesso! Spot: Ativo${futuresOk ? " | Futuros: Ativo" : ""}${marginOk ? " | Margem: Ativo" : ""}`;
@@ -136,15 +170,21 @@ export function BinanceConnectionModal({
         msg = res.modules?.spot?.error || res.modules?.futures?.error || "Falha ao validar chaves da Binance.";
       }
 
+      if (modeChanged) {
+        msg = `🔑 Suas chaves foram reconhecidas como ${resolvedMode === "binance_testnet" ? "Binance Testnet" : "Binance Live"}. O ambiente foi ajustado automaticamente para o correto. ${msg}`;
+      }
+
       return {
         ok: res.ok,
         message: msg,
         modules: res.modules,
+        resolvedMode,
       };
     } catch (err: any) {
       return {
         ok: false,
         message: err.message || "Erro de rede ao conectar à Binance.",
+        resolvedMode: requestedMode,
       };
     }
   };
@@ -175,7 +215,8 @@ export function BinanceConnectionModal({
     setDiagnosticData(diag);
 
     if (diag.ok) {
-      await setCredentials(cleanKey, cleanSecret, isTestnet);
+      const resolvedTestnet = diag.resolvedMode === "binance_testnet";
+      await setCredentials(cleanKey, cleanSecret, resolvedTestnet);
       await fetchAllData();
       setIsLoading(false);
       setTimeout(() => {

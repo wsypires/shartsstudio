@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { trace, context, SpanStatusCode } from "@opentelemetry/api";
 
 export interface BinanceCredentials {
   apiKey?: string;
@@ -95,7 +96,7 @@ export async function syncServerTime(baseUrl = LIVE_SPOT_URLS[0]): Promise<numbe
       const data = await res.json();
       const t1 = Date.now();
       const latency = (t1 - t0) / 2;
-      timeOffsetMs = (data.serverTime || data.time) - (t0 + latency);
+      timeOffsetMs = Math.round((data.serverTime || data.time) - (t0 + latency));
       lastTimeSync = Date.now();
       return timeOffsetMs;
     }
@@ -104,7 +105,7 @@ export async function syncServerTime(baseUrl = LIVE_SPOT_URLS[0]): Promise<numbe
       const res = await fetch(`${PUBLIC_DATA_BASE_URL}/api/v3/time`);
       if (res.ok) {
         const data = await res.json();
-        timeOffsetMs = data.serverTime - Date.now();
+        timeOffsetMs = Math.round(data.serverTime - Date.now());
         lastTimeSync = Date.now();
       }
     } catch {}
@@ -267,71 +268,95 @@ export async function binanceRequest(
   }
 
   const executeAttempt = async (targetBaseUrl: string) => {
-    const cleanParams: Record<string, string> = {};
+    const tracer = trace.getTracer("opencharts-binance-engine");
+    const span = tracer.startSpan(
+      `binance ${method} ${endpoint}`,
+      { attributes: { "binance.endpoint": endpoint, "binance.base_url": targetBaseUrl, "binance.signed": signed, "binance.testnet": useTestnet, "binance.method": method } },
+    );
+    const startTime = Date.now();
 
-    for (const [k, v] of Object.entries(params)) {
-      if (v !== undefined && v !== null && v !== "") {
-        cleanParams[k] = String(v);
-      }
-    }
-
-    if (signed) {
-      const adjustedTimestamp = Date.now() + timeOffsetMs;
-      cleanParams.timestamp = String(adjustedTimestamp);
-      cleanParams.recvWindow = cleanParams.recvWindow || "60000"; // Max 60s
-    }
-
-    let queryString = new URLSearchParams(cleanParams).toString();
-
-    if (signed) {
-      const signature = signQuery(queryString, apiSecret);
-      queryString = `${queryString}&signature=${signature}`;
-    }
-
-    const headers: Record<string, string> = {
-      "User-Agent": "OpenCharts-BinanceOfficialConnector/2.0",
-      Accept: "application/json",
-    };
-
-    if (apiKey) {
-      headers["X-MBX-APIKEY"] = apiKey;
-    }
-
-    let url = `${targetBaseUrl}${endpoint}`;
-    let body: string | undefined = undefined;
-
-    if (method === "GET" || method === "DELETE") {
-      if (queryString) {
-        url = `${url}?${queryString}`;
-      }
-    } else {
-      headers["Content-Type"] = "application/x-www-form-urlencoded";
-      body = queryString;
-    }
-
-    const res = await fetch(url, {
-      method,
-      headers,
-      body,
-    });
-
-    const text = await res.text();
-    let data: any;
     try {
-      data = JSON.parse(text);
-    } catch {
-      data = text;
-    }
+      const cleanParams: Record<string, string> = {};
 
-    if (!res.ok && typeof data === "object" && data !== null) {
-      data.userFriendlyMessage = translateBinanceError(data.code, data.msg, res.status);
-    }
+      for (const [k, v] of Object.entries(params)) {
+        if (v !== undefined && v !== null && v !== "") {
+          cleanParams[k] = String(v);
+        }
+      }
 
-    return {
-      ok: res.ok,
-      status: res.status,
-      data,
-    };
+      if (signed) {
+        const adjustedTimestamp = Math.floor(Date.now() + timeOffsetMs);
+        cleanParams.timestamp = String(adjustedTimestamp);
+        cleanParams.recvWindow = cleanParams.recvWindow || "60000"; // Max 60s
+      }
+
+      let queryString = new URLSearchParams(cleanParams).toString();
+
+      if (signed) {
+        const signature = signQuery(queryString, apiSecret);
+        queryString = `${queryString}&signature=${signature}`;
+      }
+
+      const headers: Record<string, string> = {
+        "User-Agent": "OpenCharts-BinanceOfficialConnector/2.0",
+        Accept: "application/json",
+      };
+
+      if (apiKey) {
+        headers["X-MBX-APIKEY"] = apiKey;
+      }
+
+      let url = `${targetBaseUrl}${endpoint}`;
+      let body: string | undefined = undefined;
+
+      if (method === "GET" || method === "DELETE") {
+        if (queryString) {
+          url = `${url}?${queryString}`;
+        }
+      } else {
+        headers["Content-Type"] = "application/x-www-form-urlencoded";
+        body = queryString;
+      }
+
+      const res = await fetch(url, {
+        method,
+        headers,
+        body,
+      });
+
+      const text = await res.text();
+      let data: any;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = text;
+      }
+
+      if (!res.ok && typeof data === "object" && data !== null) {
+        data.userFriendlyMessage = translateBinanceError(data.code, data.msg, res.status);
+      }
+
+      span.setAttributes({
+        "http.status_code": res.status,
+        "binance.error_code": typeof data === "object" && data !== null ? data.code : undefined,
+        "binance.msg": typeof data === "object" && data !== null ? data.msg : undefined,
+        "binance.latency_ms": Date.now() - startTime,
+      });
+      if (!res.ok) {
+        span.setStatus({ code: SpanStatusCode.ERROR });
+      }
+
+      return {
+        ok: res.ok,
+        status: res.status,
+        data,
+      };
+    } catch (err: any) {
+      span.setStatus({ code: SpanStatusCode.ERROR, message: err?.message || String(err) });
+      throw err;
+    } finally {
+      span.end();
+    }
   };
 
   let lastResult = {

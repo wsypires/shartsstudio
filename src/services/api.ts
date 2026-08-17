@@ -1,5 +1,6 @@
 import { demoApi } from "./demo/api.ts";
 import type { Candle } from "./schemas.ts";
+import type { PlaceOrderInput } from "./schemas.ts";
 import { DEMO_SYMBOLS } from "./demo/instruments.ts";
 
 export const API_BASE = "";
@@ -180,6 +181,44 @@ const customApiOverrides: Record<string, any> = {
       }
     } catch {}
     return demoApi.getTick(symbol);
+  },
+  // Bridge: Signal Engine (UI) → Trade Engine (server) → Binance REST
+  placeOrder: async (input: PlaceOrderInput) => {
+    const { useBinanceStore } = await import("./binance/useBinanceStore.ts");
+    const mode = useBinanceStore.getState().mode;
+
+    if (mode === "demo" || mode === undefined) {
+      return demoApi.placeOrder(input);
+    }
+
+    const side = input.side === "BUY" ? "LONG" : "SHORT";
+    const res = await fetch("/api/webhook/strategy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        symbol: input.symbol,
+        side,
+        price: input.price,
+        quantity: input.quantity,
+        stopLoss: input.stopLoss,
+        takeProfit: input.takeProfit,
+        strategy: input.comment || "Signal Engine",
+        source: "signal-engine",
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      throw new Error(data.error || data.message || `Falha ao executar ordem via Trade Engine (HTTP ${res.status})`);
+    }
+    return {
+      id: data.trade?.id || `webhook_${Date.now()}`,
+      symbol: input.symbol,
+      side: input.side,
+      quantity: input.quantity,
+      price: input.price || data.trade?.entryPrice,
+      status: "FILLED",
+      comment: input.comment,
+    };
   },
 };
 

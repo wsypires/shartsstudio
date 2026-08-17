@@ -20,10 +20,12 @@ import {
   Layers,
   ArrowDownRight,
   XCircle,
+  Bot,
 } from "lucide-react";
 import { Button } from "../ui/button.tsx";
 import { toast } from "../../services/toast.ts";
 import { cn } from "../../lib/utils.ts";
+import { BinanceEnginePanel } from "./BinanceEnginePanel.tsx";
 
 export function BinanceHub() {
   const {
@@ -52,7 +54,7 @@ export function BinanceHub() {
   } = useBinanceStore();
 
   const [activeTab, setActiveTab] = useState<
-    "wallet" | "spot" | "futures" | "delivery" | "margin" | "permissions"
+    "wallet" | "spot" | "futures" | "delivery" | "margin" | "permissions" | "engine"
   >("wallet");
 
   const [searchFilter, setSearchFilter] = useState("");
@@ -178,6 +180,20 @@ export function BinanceHub() {
           >
             <Key className="w-3.5 h-3.5" />
             <span>Diagnóstico & Permissões</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab("engine")}
+            className={cn(
+              "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all shrink-0",
+              activeTab === "engine"
+                ? "bg-[#F3BA2F] text-black font-semibold shadow-sm"
+                : "text-neutral-400 hover:text-white hover:bg-[#21262d]",
+            )}
+          >
+            <Bot className="w-3.5 h-3.5" />
+            <span>Trade Engine & Bots</span>
           </button>
         </div>
 
@@ -885,6 +901,8 @@ export function BinanceHub() {
             </div>
           </div>
         )}
+      {/* ── TAB 7: TRADE ENGINE & BOTS ── */}
+        {activeTab === "engine" && <BinanceEnginePanel />}
       </div>
     </div>
   );

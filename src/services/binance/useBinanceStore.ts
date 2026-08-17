@@ -238,9 +238,11 @@ export const useBinanceStore = create<BinanceStoreState>((set, get) => ({
   },
 
   loadStoredConfig: async () => {
+    let serverHasEnvKeys = false;
     try {
       const serverConfig = await binanceClient.config().catch(() => null);
       if (serverConfig) {
+        serverHasEnvKeys = Boolean(serverConfig.isConfigured);
         if (serverConfig.serverIp) {
           set({ serverIp: serverConfig.serverIp });
         }
@@ -255,7 +257,17 @@ export const useBinanceStore = create<BinanceStoreState>((set, get) => ({
     } catch {}
 
     if (get().mode !== "demo" && get().isConfigured) {
-      get().testConnection();
+      if (!get().apiKey && serverHasEnvKeys) {
+        // No keys stored in the browser: authenticate with the server-side
+        // env credentials so the app starts already validated.
+        await get().testConnection({
+          apiKey: "",
+          apiSecret: "",
+          useTestnet: get().useTestnet,
+        });
+      } else {
+        get().testConnection();
+      }
       get().fetchAllData();
       get().fetchSymbols();
     }
@@ -274,12 +286,25 @@ export const useBinanceStore = create<BinanceStoreState>((set, get) => ({
         set({ isConnected: true, latencyMs: latency });
         return { ok: true, message: res.message || "Conectado com sucesso à Binance!" };
       } else {
-        await binanceClient.ping();
+        // No explicit keys: fall back to the server-side env credentials if configured
+        const res = await binanceClient.testKeys({ apiKey: "", apiSecret: "", useTestnet });
         const latency = Date.now() - t0;
         set({ isConnected: true, latencyMs: latency });
-        return { ok: true, message: "Conexão com a API pública da Binance ativa" };
+        return {
+          ok: true,
+          message: res.message || "Conectado com sucesso à Binance (credenciais do servidor)!",
+        };
       }
     } catch (err: any) {
+      // If the server has no env credentials, fall back to a public ping
+      if (!get().apiKey) {
+        try {
+          await binanceClient.ping();
+          const latency = Date.now() - t0;
+          set({ isConnected: true, latencyMs: latency });
+          return { ok: true, message: "Conexão com a API pública da Binance ativa" };
+        } catch {}
+      }
       set({ isConnected: false, latencyMs: 0 });
       return {
         ok: false,

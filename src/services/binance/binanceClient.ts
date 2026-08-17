@@ -204,6 +204,7 @@ export const binanceClient = {
   testConnectionAll: (creds: RequestCredentials) =>
     request<{
       ok: boolean;
+      hint?: "testnet" | "live";
       modules: {
         spot: { ok: boolean; status: number; data?: any; error?: string };
         restrictions: { ok: boolean; status: number; data?: BinanceApiRestrictions };

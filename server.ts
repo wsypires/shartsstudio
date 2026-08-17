@@ -1,3 +1,4 @@
+import "./tracing";
 import "dotenv/config";
 import express from "express";
 import path from "path";
@@ -8,6 +9,11 @@ import {
   getServerEgressIp,
   detectServiceType,
 } from "./server/binance.ts";
+import {
+  getEngine,
+  getEngineSnapshot,
+  processEngineSignal,
+} from "./server/engine/index.ts";
 
 async function startServer() {
   const app = express();
@@ -400,6 +406,14 @@ async function startServer() {
       });
     }
 
+    const isAuthError = (result: { ok: boolean; status: number; data?: any }): boolean => {
+      if (!result.ok) {
+        const code = result.data?.code;
+        return result.status === 401 || code === -2014 || code === -2015 || code === -1002;
+      }
+      return false;
+    };
+
     if (useTestnet) {
       // Binance Spot Testnet (https://testnet.binance.vision)
       const spotRes = await binanceRequest("/api/v3/account", {
@@ -411,9 +425,24 @@ async function startServer() {
       });
 
       const spotOk = spotRes.ok;
+
+      // If the keys are rejected on Testnet, probe Live to detect a mode mismatch
+      let hint: "testnet" | "live" | undefined;
+      if (!spotOk && isAuthError(spotRes)) {
+        const liveProbe = await binanceRequest("/api/v3/account", {
+          signed: true,
+          apiKey,
+          apiSecret,
+          useTestnet: false,
+          params: { omitZeroBalances: "true" },
+        });
+        if (liveProbe.ok) hint = "live";
+      }
+
       return res.json({
         ok: spotOk,
         isTestnet: true,
+        hint,
         modules: {
           spot: {
             ok: spotOk,
@@ -499,8 +528,22 @@ async function startServer() {
 
     const overallOk = spotOk || restrictionsOk || futuresOk;
 
+    // If the keys are rejected on Live, probe Testnet to detect a mode mismatch
+    let hint: "testnet" | "live" | undefined;
+    if (!spotOk && isAuthError(spotRes)) {
+      const testnetProbe = await binanceRequest("/api/v3/account", {
+        signed: true,
+        apiKey,
+        apiSecret,
+        useTestnet: true,
+        params: { omitZeroBalances: "true" },
+      });
+      if (testnetProbe.ok) hint = "testnet";
+    }
+
     res.json({
       ok: overallOk,
+      hint,
       modules: {
         spot: {
           ok: spotOk,
@@ -1019,6 +1062,118 @@ async function startServer() {
     });
 
     res.status(result.status).json(result.data);
+  });
+
+  // ── Trade Engine (Signal Engine → Trade Engine → Report Engine → Telegram) ──
+
+  // Webhook de estratégia: recebe sinais LONG/SHORT/EXIT do Signal Engine (UI ou externo)
+  app.post("/api/webhook/strategy", async (req, res) => {
+    const signal = req.body;
+    if (!signal || !signal.symbol || !signal.side) {
+      return res.status(400).json({
+        ok: false,
+        error: "Sinal inválido. Necessário: { symbol, side: 'LONG'|'SHORT'|'EXIT', ... }",
+      });
+    }
+
+    const result = await processEngineSignal({
+      symbol: String(signal.symbol).toUpperCase(),
+      side: signal.side,
+      price: signal.price != null ? Number(signal.price) : undefined,
+      timeframe: signal.timeframe,
+      strategy: signal.strategy,
+      quantity: signal.quantity != null ? Number(signal.quantity) : undefined,
+      riskPct: signal.riskPct != null ? Number(signal.riskPct) : undefined,
+      leverage: signal.leverage != null ? Number(signal.leverage) : undefined,
+      stopLoss: signal.stopLoss != null ? Number(signal.stopLoss) : undefined,
+      takeProfit: signal.takeProfit != null ? Number(signal.takeProfit) : undefined,
+      mode: signal.mode,
+      source: signal.source || "webhook",
+    });
+
+    if (result.ok) {
+      res.json({ ok: true, trade: result.trade });
+    } else {
+      res.status(409).json({ ok: false, error: result.error });
+    }
+  });
+
+  // Alias para testes manuais pela UI
+  app.post("/api/engine/signal", async (req, res) => {
+    const { symbol, side, price, quantity, riskPct, stopLoss, takeProfit, strategy, mode, leverage } = req.body || {};
+    if (!symbol || !side) {
+      return res.status(400).json({ ok: false, error: "symbol e side são obrigatórios" });
+    }
+    const result = await processEngineSignal({
+      symbol: String(symbol).toUpperCase(),
+      side,
+      price: price != null ? Number(price) : undefined,
+      quantity: quantity != null ? Number(quantity) : undefined,
+      riskPct: riskPct != null ? Number(riskPct) : undefined,
+      stopLoss: stopLoss != null ? Number(stopLoss) : undefined,
+      takeProfit: takeProfit != null ? Number(takeProfit) : undefined,
+      strategy,
+      mode,
+      leverage: leverage != null ? Number(leverage) : undefined,
+      source: "ui-manual",
+    });
+    if (result.ok) {
+      res.json({ ok: true, trade: result.trade });
+    } else {
+      res.status(409).json({ ok: false, error: result.error });
+    }
+  });
+
+  // Estado do Trade Engine + Report Engine (trades, PnL, saldo, cooldowns, erros)
+  app.get("/api/engine/status", async (_req, res) => {
+    const snapshot = getEngineSnapshot();
+    res.json(snapshot);
+  });
+
+  // Fechar posição aberta por id ou todas de um símbolo
+  app.post("/api/engine/close", async (req, res) => {
+    const { id, symbol } = req.body || {};
+    const engine = getEngine().tradeEngine;
+    let closed = 0;
+    if (id) {
+      const ok = await engine.closeById(String(id));
+      res.json({ ok, closed: ok ? 1 : 0 });
+      return;
+    }
+    if (symbol) {
+      closed = await engine.closeAllForSymbol(String(symbol).toUpperCase(), "MANUAL");
+    }
+    res.json({ ok: closed > 0, closed });
+  });
+
+  // ── Telegram Notifier ──
+  app.get("/api/engine/telegram/config", (_req, res) => {
+    const tg = getEngine().telegram;
+    res.json({
+      configured: tg.isConfigured(),
+      config: tg.getConfig(),
+    });
+  });
+
+  app.post("/api/engine/telegram/config", (req, res) => {
+    const { token, chatId, enabled } = req.body || {};
+    if (!token || !chatId) {
+      return res.status(400).json({ ok: false, error: "token e chatId são obrigatórios" });
+    }
+    const tg = getEngine().telegram;
+    tg.setConfig({ token: String(token), chatId: String(chatId) });
+    if (typeof enabled === "boolean") tg.setEnabled(enabled);
+    res.json({ ok: true, configured: tg.isConfigured() });
+  });
+
+  app.post("/api/engine/telegram/test", async (_req, res) => {
+    const tg = getEngine().telegram;
+    const result = await tg.send("✅ <b>OpenCharts Trade Engine</b>\nConexão com o Telegram funcionando.");
+    if (result.ok) {
+      res.json({ ok: true });
+    } else {
+      res.status(400).json({ ok: false, error: result.error });
+    }
   });
 
   // ── Vite Middleware for development vs Static dist for production ──
